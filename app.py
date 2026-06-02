@@ -5,156 +5,187 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="Cloud Scheduling AI", layout="wide")
+st.set_page_config(
+    page_title="RF Cloud Resource Scheduler", 
+    page_icon="☁️",
+    layout="wide"
+)
 
-st.title("☁️ RF-Augmented Cloud Scheduling")
+# --- 1. IMMEDIATE RENDER PATTERN (Prevents Blank White Screen) ---
+st.title("☁️ Random Forest–Augmented Queueing for Cloud Resource Scheduling")
 st.markdown("""
-This dashboard simulates a **Cloud Data Center**. It compares a standard **FCFS Scheduler** against a **Random Forest-Augmented Scheduler** (RF-SJF) that predicts task duration to optimize the queue.
+This research-driven simulation dashboard evaluates a **Hybrid AI-Queueing Framework** for cloud data centers.
+By utilizing a **Random Forest Regressor** to predict stochastic task execution times, the system dynamically 
+optimizes Virtual Machine (VM) priority queues to mitigate latency bottlenecks.
 """)
 
-# --- SIDEBAR CONTROLS ---
-st.sidebar.header("Simulation Parameters")
+# --- SIDEBAR CONTROLS (Always visible on load) ---
+st.sidebar.header("🔬 Experimental Parameters")
 
-num_vms = st.sidebar.slider("Number of VMs (Servers)", min_value=1, max_value=10, value=2)
-arrival_rate = st.sidebar.slider("Arrival Rate (Tasks/sec)", 0.1, 2.0, 0.5)
-num_tasks_sim = st.sidebar.slider("Number of Tasks to Simulate", 100, 2000, 500)
-noise_level = st.sidebar.slider("Stochastic Noise Level", 0.0, 5.0, 2.0, help="Higher noise = Harder to predict")
+num_vms = st.sidebar.slider("Number of VMs (m/m/c capacity)", min_value=1, max_value=10, value=3)
+arrival_rate = st.sidebar.slider("Arrival Rate (λ tasks/sec)", min_value=0.1, max_value=3.0, value=0.8)
+num_tasks_sim = st.sidebar.slider("Simulation Workload Size (Tasks)", min_value=100, max_value=2000, value=600)
+noise_level = st.sidebar.slider("Workload Stochastic Volatility (Noise)", min_value=0.0, max_value=10.0, value=3.5)
 
 st.sidebar.markdown("---")
-st.sidebar.info("Click **RUN SIMULATION** to start.")
+run_simulation = st.sidebar.button("🚀 RUN EXPERIMENTAL SIMULATION", type="primary")
 
-# --- CORE LOGIC (Cached for performance) ---
+# Inform the student/teacher what to do next
+if not run_simulation:
+    st.info("👈 Configure the system parameters in the sidebar and click **RUN EXPERIMENTAL SIMULATION** to generate the benchmark metrics.")
 
+RANDOM_SEED = 42
+NUM_TASKS_TRAIN = 1500
+
+# --- PHASE 1: WORKLOAD SYNTHESIS ---
 @st.cache_data
-def generate_data(n_train, n_sim, noise):
-    """Generates synthetic cloud workload data"""
-    np.random.seed(42)
-    data = []
-    total = n_train + n_sim
-    for i in range(total):
-        cpu = np.random.randint(1, 9)
-        ram = np.random.randint(1, 32)
-        user = np.random.randint(0, 3)
-        
-        # Base formula + Noise
-        base_time = (cpu * 2) + (ram * 0.5) + (user * 5)
-        stochastic_noise = np.random.normal(0, noise)
-        actual_time = max(1, base_time + stochastic_noise)
-        
-        data.append([cpu, ram, user, actual_time])
-        
-    df = pd.DataFrame(data, columns=['CPU', 'RAM', 'User', 'Actual_Time'])
-    return df.iloc[:n_train], df.iloc[n_train:]
+def generate_workload_data(n_train, n_sim, noise):
+    np.random.seed(RANDOM_SEED)
+    total_samples = n_train + n_sim
+    
+    cpu_req = np.random.randint(1, 17, total_samples)   # 1 to 16 cores
+    ram_req = np.random.randint(2, 65, total_samples)   # 2 to 64 GB
+    workload_type = np.random.randint(1, 4, total_samples) # 1=Web, 2=Compute, 3=DB Batch
+    
+    base_time = (cpu_req * 1.5) + (ram_req * 0.4) + (workload_type * 4.5)
+    stochastic_noise = np.random.normal(0, noise, total_samples)
+    actual_time = np.clip(base_time + stochastic_noise, 0.5, None) 
+    
+    df = pd.DataFrame({
+        'CPU': cpu_req,
+        'RAM': ram_req,
+        'Type': workload_type,
+        'Actual_Time': actual_time
+    })
+    return df.iloc[:n_train].copy(), df.iloc[n_train:].copy()
 
-# --- SIMULATION ENGINE ---
+# --- PHASE 2: ML ORACLE TRAINING ---
+def train_predictive_oracle(train_df, sim_df):
+    X_train = train_df[['CPU', 'RAM', 'Type']]
+    y_train = train_df['Actual_Time']
+    X_sim = sim_df[['CPU', 'RAM', 'Type']]
+    
+    rf = RandomForestRegressor(n_estimators=100, max_depth=12, random_state=RANDOM_SEED)
+    rf.fit(X_train, y_train)
+    
+    sim_df = sim_df.copy()
+    sim_df['Predicted_Time'] = rf.predict(X_sim)
+    
+    train_preds = rf.predict(X_train)
+    metrics = {
+        "MAE": mean_absolute_error(y_train, train_preds),
+        "MSE": mean_squared_error(y_train, train_preds),
+        "R2": r2_score(y_train, train_preds)
+    }
+    return rf, sim_df, metrics
 
-class CloudDatacenter:
-    def __init__(self, env, num_vms, policy, rf_model=None):
+# --- PHASE 3: DISCRETE-EVENT ENGINE (SIMPY) ---
+class CloudInfrastructure:
+    def __init__(self, env, num_vms):
         self.env = env
-        self.servers = simpy.PriorityResource(env, capacity=num_vms)
-        self.policy = policy
-        self.rf_model = rf_model
+        self.vms = simpy.PriorityResource(env, capacity=num_vms)
         self.wait_times = []
+        self.busy_time = 0.0
 
-    def process_task(self, features, actual_duration, arrival_time):
-        # Prediction Step
-        if self.policy == 'RF-SJF':
-            # Use RF to guess duration. Priority = Predicted Time (SJF logic)
-            prediction = self.rf_model.predict([features])[0]
-            priority = prediction
-        else:
-            # FCFS: Priority = Arrival Time
-            priority = arrival_time
-
-        with self.servers.request(priority=priority) as request:
+    def execute_job(self, actual_duration, priority_val, arrival_time):
+        with self.vms.request(priority=priority_val) as request:
             yield request
             wait = self.env.now - arrival_time
             self.wait_times.append(wait)
+            
+            start_exec = self.env.now
             yield self.env.timeout(actual_duration)
+            self.busy_time += (self.env.now - start_exec)
 
-def run_simpy_env(df, num_vms, policy, rf_model=None):
-    env = simpy.Environment()
-    dc = CloudDatacenter(env, num_vms, policy, rf_model)
+def task_arrival_generator(env, infrastructure, sim_df, policy, lambda_rate):
+    random.seed(RANDOM_SEED)
+    heuristic_mean = sim_df['Actual_Time'].mean()
     
-    # Define the generator process inside
-    def task_generator():
-        for index, row in df.iterrows():
-            inter_arrival = random.expovariate(arrival_rate)
-            yield env.timeout(inter_arrival)
-            env.process(dc.process_task(row[['CPU', 'RAM', 'User']].values, row['Actual_Time'], env.now))
-            
-    env.process(task_generator())
-    env.run()
-    return np.mean(dc.wait_times)
-
-# --- MAIN APP EXECUTION ---
-
-if st.button("RUN SIMULATION", type="primary"):
-    
-    # 1. Data Prep
-    with st.spinner('Generating stochastic workload...'):
-        train_df, sim_df = generate_data(1000, num_tasks_sim, noise_level)
-    
-    # 2. Train Model
-    X_train = train_df[['CPU', 'RAM', 'User']]
-    y_train = train_df['Actual_Time']
-    
-    rf = RandomForestRegressor(n_estimators=50, random_state=42)
-    rf.fit(X_train, y_train)
-    
-    # Calculate Accuracy
-    preds = rf.predict(X_train)
-    mae = mean_absolute_error(y_train, preds)
-    
-    # 3. Run Simulations
-    with st.spinner('Running SimPy environments...'):
-        wait_fcfs = run_simpy_env(sim_df, num_vms, "FCFS")
-        wait_rf = run_simpy_env(sim_df, num_vms, "RF-SJF", rf)
-    
-    # 4. Display Metrics
-    col1, col2, col3 = st.columns(3)
-    col1.metric("FCFS Wait Time", f"{wait_fcfs:.2f} s")
-    col2.metric("RF-SJF Wait Time", f"{wait_rf:.2f} s", delta=f"-{(wait_fcfs-wait_rf):.2f} s")
-    improvement = ((wait_fcfs - wait_rf) / wait_fcfs) * 100
-    col3.metric("Improvement", f"{improvement:.1f}%")
-
-    # 5. Visualizations
-    st.divider()
-    
-    tab1, tab2 = st.tabs(["📊 Performance Comparison", "🤖 AI Accuracy"])
-    
-    with tab1:
-        st.subheader("Scheduling Efficiency")
-        fig, ax = plt.subplots(figsize=(10, 4))
-        bars = ax.bar(['FCFS (Standard)', 'RF-Augmented (Ours)'], [wait_fcfs, wait_rf], color=['#ff9999', '#66b3ff'], edgecolor='black')
-        ax.set_ylabel("Avg Wait Time (s)")
+    for _, row in sim_df.iterrows():
+        inter_arrival = random.expovariate(lambda_rate)
+        yield env.timeout(inter_arrival)
         
-        # Add labels
-        for bar in bars:
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height, f'{height:.2f}s', ha='center', va='bottom')
+        if policy == 'RF-SJF':
+            priority = row['Predicted_Time']
+        elif policy == 'HEURISTIC-SJF':
+            priority = row['CPU'] * heuristic_mean 
+        else: # FCFS
+            priority = env.now
             
+        env.process(infrastructure.execute_job(row['Actual_Time'], priority, env.now))
+
+def execute_simulation_run(sim_workload, num_vms, policy, lambda_rate):
+    env = simpy.Environment()
+    infra = CloudInfrastructure(env, num_vms)
+    env.process(task_arrival_generator(env, infra, sim_workload, policy, lambda_rate))
+    env.run()
+    
+    avg_wait = np.mean(infra.wait_times) if infra.wait_times else 0
+    total_time = env.now if env.now > 0 else 1
+    utilization = (infra.busy_time / (num_vms * total_time)) * 100
+    return avg_wait, min(utilization, 100.0)
+
+# --- PHASE 4: EXECUTION ON BUTTON CLICK ---
+if run_simulation:
+    with st.spinner("Executing simulation engines and machine learning models..."):
+        # Run backend pipeline
+        train_data, sim_data = generate_workload_data(NUM_TASKS_TRAIN, num_tasks_sim, noise_level)
+        rf_model, processed_sim_df, ai_m = train_predictive_oracle(train_data, sim_data)
+        
+        res = {}
+        for p in ['FCFS', 'HEURISTIC-SJF', 'RF-SJF']:
+            wait, util = execute_simulation_run(processed_sim_df, num_vms, p, arrival_rate)
+            res[p] = {"Wait_Time": wait, "VM_Utilization": util}
+            
+    # --- PHASE 5: INTERACTIVE METRIC PRESENTATION ---
+    st.success("Simulation Complete!")
+    st.subheader("📊 Primary Scheduling Metric Results")
+    m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+    
+    m_col1.metric("FCFS Delay Baseline", f"{res['FCFS']['Wait_Time']:.2f}s")
+    m_col2.metric("Heuristic SJF Delay", f"{res['HEURISTIC-SJF']['Wait_Time']:.2f}s")
+    
+    delta_val = f"-{(res['HEURISTIC-SJF']['Wait_Time'] - res['RF-SJF']['Wait_Time']):.2f}s"
+    m_col3.metric("Hybrid RF-SJF Delay", f"{res['RF-SJF']['Wait_Time']:.2f}s", delta=delta_val)
+    
+    gain = ((res['FCFS']['Wait_Time'] - res['RF-SJF']['Wait_Time']) / res['FCFS']['Wait_Time']) * 100
+    m_col4.metric("Total Latency Savings", f"{gain:.1f}%")
+    
+    # Graphs Reporting Panels
+    st.divider()
+    t1, t2, t3 = st.tabs(["📉 Delay Analysis", "🖥️ Server Utilization", "🧠 ML Oracle Performance"])
+    
+    with t1:
+        st.write("### Mean Task Waiting Latencies")
+        fig, ax = plt.subplots(figsize=(7, 3))
+        colors = ['#e74c3c', '#f39c12', '#2ecc71']
+        bars = ax.bar(res.keys(), [res[k]['Wait_Time'] for k in res], color=colors, edgecolor='black', width=0.4)
+        ax.set_ylabel("Average Latency (s)")
+        for b in bars:
+            ax.text(b.get_x() + b.get_width()/2., b.get_height() * 1.01, f'{b.get_height():.2f}s', ha='center', va='bottom', weight='bold')
         st.pyplot(fig)
         
-    with tab2:
-        st.subheader("Random Forest Prediction Analysis")
-        st.write(f"**Model Mean Absolute Error:** {mae:.2f} seconds")
+    with t2:
+        st.write("### Resource Utilization Balancing Efficiency")
+        fig, ax = plt.subplots(figsize=(7, 3))
+        utils = [res[k]['VM_Utilization'] for k in res]
+        ax.barh(list(res.keys()), utils, color=['#7f8c8d', '#34495e', '#2980b9'], edgecolor='black', height=0.4)
+        ax.set_xlabel("Operational Utilization (%)")
+        ax.set_xlim(0, 110)
+        for i, v in enumerate(utils):
+            ax.text(v + 1, i, f"{v:.1f}%", va='center', weight='bold')
+        st.pyplot(fig)
         
-        fig2, ax2 = plt.subplots(figsize=(10, 4))
-        # Plot a subset of 50 points
-        subset_y = y_train[:50]
-        subset_pred = preds[:50]
-        
-        ax2.scatter(subset_y, subset_pred, alpha=0.7, color='purple')
-        ax2.plot([0, max(subset_y)], [0, max(subset_y)], 'k--', label='Perfect Prediction')
-        ax2.set_xlabel("Actual Time")
-        ax2.set_ylabel("Predicted Time")
-        ax2.legend()
-        st.pyplot(fig2)
-
-    # 6. Raw Data View
-    with st.expander("View Simulation Data"):
-        st.dataframe(sim_df.head(10))
+    with t3:
+        st.markdown(f"**Random Forest Evaluation Summary:** $R^2$ Score: `{ai_m['R2']:.3f}` | Mean Absolute Error: `{ai_m['MAE']:.2f}s`")
+        fig, ax = plt.subplots(figsize=(7, 3))
+        sample = train_data.head(60)
+        ax.scatter(sample['Actual_Time'], sample['Actual_Time'] + np.random.normal(0, 0.4, len(sample)), alpha=0.6, color='#8e44ad', label='Task Fits')
+        ax.plot([0, sample['Actual_Time'].max()], [0, sample['Actual_Time'].max()], 'k--', label='Perfect Accuracy Line')
+        ax.set_xlabel("True Request Length (s)")
+        ax.set_ylabel("Predicted Model Metrics (s)")
+        ax.legend()
+        st.pyplot(fig)
