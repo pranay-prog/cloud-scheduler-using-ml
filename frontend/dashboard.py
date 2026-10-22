@@ -743,9 +743,9 @@ def live_dashboard_view(engine: LiveSimulationEngine):
     fig1, fig2 = create_plotly_charts(engine)
     col1, col2 = st.columns(2)
     with col1:
-        st.plotly_chart(fig1, use_container_width=True, key="chart_latency_p95")
+        st.plotly_chart(fig1, width="stretch", key="chart_latency_p95")
     with col2:
-        st.plotly_chart(fig2, use_container_width=True, key="chart_queue_rate")
+        st.plotly_chart(fig2, width="stretch", key="chart_queue_rate")
 
 
 # --- 7. MAIN CONTROLLER ---
@@ -770,7 +770,7 @@ def main():
             run_toggle = st.toggle("⚡ Running", value=st.session_state.is_running, key="sim_run_state")
             st.session_state.is_running = run_toggle
         with col_s2:
-            if st.button("🔄 Reset", use_container_width=True):
+            if st.button("🔄 Reset", width="stretch"):
                 engine.reset()
                 st.rerun()
 
@@ -788,7 +788,7 @@ def main():
         st.markdown("<h4 style='color:#f8fafc;'>🌊 Workload Parameters</h4>", unsafe_allow_html=True)
 
         # Burst Injection Button
-        if st.button("🔥 INJECT SUDDEN BURST SPIKE", type="primary", use_container_width=True):
+        if st.button("🔥 INJECT SUDDEN BURST SPIKE", type="primary", width="stretch"):
             engine.target_lambda = 12.0
             engine.target_ca2 = 6.5
             st.toast("🚨 Injected sudden burst spike: λ=12.0 req/s, Ca²=6.5!", icon="🔥")
