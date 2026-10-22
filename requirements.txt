@@ -1,6 +1,11 @@
-streamlit
-simpy
-pandas
 numpy
-scikit-learn
+scipy
+simpy
 matplotlib
+pandas
+scikit-learn
+pytest
+pytest-cov
+flake8
+streamlit
+plotly

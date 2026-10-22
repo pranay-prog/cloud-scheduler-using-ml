@@ -1,3 +1,4 @@
+# pyrefly: ignore [missing-import]
 import simpy
 import random
 import pandas as pd
