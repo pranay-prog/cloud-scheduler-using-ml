@@ -226,6 +226,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run autoscaling benchmarks")
     parser.add_argument("--rf", action="store_true", default=True, help="Include RF variability predictor")
     parser.add_argument("--requests", type=int, default=800, help="Number of requests per trace")
+    parser.add_argument("--output-csv", default="benchmark_results.csv", help="CSV results path")
+    parser.add_argument("--output-chart", default="benchmark_comparison.png", help="Plot output path")
     args = parser.parse_args()
 
-    run_benchmark(include_rf_policy=args.rf, num_requests=args.requests)
+    run_benchmark(include_rf_policy=args.rf, num_requests=args.requests,
+                  output_csv=args.output_csv, output_chart=args.output_chart)

@@ -31,6 +31,12 @@ class SimulationResult:
     sla_violation_rate: float     # Fraction exceeding SLA
     buffer_overflow_rate: float   # Fraction rejected by buffer
     sla_target: float
+    deadline_violation_rate: float = 0.0
+    avg_waiting_time: float = 0.0
+    throughput: float = 0.0
+    avg_queue_length: float = 0.0
+    vm_utilization: float = 0.0
+    simulated_cost_vm_hours: float = 0.0
 
     def as_dict(self) -> Dict[str, float]:
         """Export summary metrics as dict."""
@@ -46,6 +52,12 @@ class SimulationResult:
             "vm_hours": self.vm_hours,
             "sla_violation_rate": self.sla_violation_rate,
             "buffer_overflow_rate": self.buffer_overflow_rate,
+            "deadline_violation_rate": self.deadline_violation_rate,
+            "avg_waiting_time": self.avg_waiting_time,
+            "throughput": self.throughput,
+            "avg_queue_length": self.avg_queue_length,
+            "vm_utilization": self.vm_utilization,
+            "simulated_cost_vm_hours": self.simulated_cost_vm_hours,
         }
 
 
@@ -58,6 +70,12 @@ class SimulationMetrics:
         self.wait_times: List[float] = []
         self.total_arrivals: int = 0
         self.buffer_overflows: int = 0
+        self.deadline_checks: int = 0
+        self.deadline_violations: int = 0
+        self._busy_seconds: float = 0.0
+        self._queue_area: float = 0.0
+        self._queue_len: int = 0
+        self._queue_last_time: float = 0.0
 
         # VM-hour tracking
         self._vm_seconds: float = 0.0
@@ -89,11 +107,27 @@ class SimulationMetrics:
         self.wait_times.append(float(wait_time))
         self.latencies.append(float(total_latency))
 
+    def record_deadline_completion(self, deadline: float | None, completion_time: float) -> None:
+        if deadline is not None:
+            self.deadline_checks += 1
+            if float(completion_time) > float(deadline):
+                self.deadline_violations += 1
+
+    def record_busy_time(self, service_time: float) -> None:
+        self._busy_seconds += max(0.0, float(service_time))
+
+    def record_queue_length(self, queue_len: int, current_time: float) -> None:
+        now = float(current_time)
+        self._queue_area += max(0.0, now - self._queue_last_time) * self._queue_len
+        self._queue_last_time = now
+        self._queue_len = max(0, int(queue_len))
+
     def finalize(self, end_time: float, policy_name: str, trace_name: str) -> SimulationResult:
         """Finalize integrals and generate comprehensive SimulationResult."""
         # Final interval integration
         dt = max(0.0, float(end_time) - self._last_time)
         self._vm_seconds += self._current_k * dt
+        self._queue_area += max(0.0, float(end_time) - self._queue_last_time) * self._queue_len
         self._last_time = float(end_time)
 
         vm_hours = self._vm_seconds / 3600.0
@@ -130,4 +164,10 @@ class SimulationMetrics:
             sla_violation_rate=sla_viol_rate,
             buffer_overflow_rate=overflow_rate,
             sla_target=self.sla_target,
+            deadline_violation_rate=(self.deadline_violations / self.deadline_checks if self.deadline_checks else 0.0),
+            avg_waiting_time=float(np.mean(self.wait_times)) if self.wait_times else 0.0,
+            throughput=(len(self.latencies) / float(end_time) if end_time > 0 else 0.0),
+            avg_queue_length=(self._queue_area / float(end_time) if end_time > 0 else 0.0),
+            vm_utilization=(min(1.0, self._busy_seconds / self._vm_seconds) if self._vm_seconds > 0 else 0.0),
+            simulated_cost_vm_hours=vm_hours,
         )

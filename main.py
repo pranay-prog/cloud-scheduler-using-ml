@@ -57,7 +57,7 @@ rf_model.fit(X, y)
 
 # Evaluate accuracy just to be sure
 preds = rf_model.predict(X)
-print(f"   Model MAE: {mean_absolute_error(y, preds):.2f} seconds (avg error)")
+print(f"   Training-set MAE: {mean_absolute_error(y, preds):.2f} seconds (not held-out accuracy)")
 
 # --- PHASE 3: THE SIMULATION (SimPy) ---
 
@@ -128,8 +128,7 @@ wait_fcfs = run_simulation("FCFS")
 wait_rf = run_simulation("RF-SJF")
 
 # --- RESULTS ---
-improvement = ((wait_fcfs - wait_rf) / wait_fcfs) * 100
-print(f"\n>>> RESULT: RF-Augmented Scheduling improved performance by {improvement:.2f}%")
+print("\n>>> Legacy demo values are illustrative only: runs do not share paired arrivals or test data.")
 
 import matplotlib.pyplot as plt
 
@@ -146,13 +145,13 @@ def plot_results(wait_fcfs, wait_rf, rf_model, X, y):
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
     
     # CHART 1: Bar Graph of Wait Times
-    strategies = ['Standard FCFS', 'RF-Augmented SJF']
+    strategies = ['Legacy FCFS', 'Legacy RF-SJF']
     times = [wait_fcfs, wait_rf]
     colors = ['#ff9999', '#66b3ff'] # Red for slow, Blue for fast
     
     ax1.bar(strategies, times, color=colors, edgecolor='black', alpha=0.7)
     ax1.set_ylabel('Average Wait Time (seconds)')
-    ax1.set_title('Scheduling Efficiency Comparison')
+    ax1.set_title('Illustrative Legacy Run Values (Not Paired Evidence)')
     
     # Add text labels on top of bars
     for i, v in enumerate(times):
@@ -172,7 +171,7 @@ def plot_results(wait_fcfs, wait_rf, rf_model, X, y):
     
     ax2.set_xlabel('Actual Execution Time')
     ax2.set_ylabel('Predicted Execution Time')
-    ax2.set_title('Random Forest "Oracle" Accuracy')
+    ax2.set_title('Random Forest Training-Set Fit (Not Test Accuracy)')
     ax2.legend()
     ax2.grid(True, linestyle='--', alpha=0.5)
 

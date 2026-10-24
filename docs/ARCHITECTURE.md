@@ -44,3 +44,26 @@ graph TD
 9. **Capacity Provisioning Decision**: Calculates optimal $k^*$ balancing latency SLA vs VM-hour cost, factoring in $T_{\text{scale}} = 10\text{s}$ node spin-up lag.
 10. **System Actuation**: Adjusts SimPy active worker instances and serves tasks from $Q(t)$.
 11. **Telemetry & Metric Feedback**: Integrates real-time P95/P99 latency, VM-hours, and buffer overflow telemetry back to the controller.
+
+## Research dispatch path
+
+The new task-ordering experiment is separate from capacity autoscaling. Tasks may carry an optional relative deadline allowance, converted to an absolute deadline on arrival. A Random Forest is trained on one split, calibrated from held-out residuals on a second, measured on a validation split, and scored on a disjoint test split. Dispatch may use FIFO, actual runtime (oracle only), predicted runtime, absolute deadline, predicted slack, or slack computed from the calibrated upper runtime. The policy observes waiting tasks when a worker requests its next task; already-running work is not preempted.
+
+```mermaid
+flowchart TD
+  T[Generated tasks with optional deadlines] --> Q[Ingress buffer and processing queue]
+  T --> RF[Random Forest prediction]
+  TR[Train split] --> RF
+  CA[Calibration split residuals] --> CAL[One-sided upper residual quantile]
+  RF --> UP[Upper runtime estimate]
+  CAL --> UP
+  RF --> DISPATCH[Deterministic queue dispatch]
+  UP --> SLACK[Estimated wait and deadline slack]
+  Q --> DISPATCH
+  SLACK --> DISPATCH
+  DISPATCH --> W[SimPy worker pool]
+  W --> M[Metrics and raw results]
+  TE[Test split] --> EV[MAE, RMSE and empirical coverage]
+```
+
+Calibration and held-out test rows are disjoint. A single residual quantile gives the same additive margin to every task. Test coverage is reported empirically and does not imply a guarantee under distribution shift. See `simulation/research_benchmark.py` and the research section of the README for the exact metric definitions and benchmark factors.

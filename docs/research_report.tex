@@ -1,0 +1,79 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,booktabs,hyperref}
+\title{Uncertainty-Aware, Deadline-Aware Cloud Task Scheduling Using Random Forest Regression}
+\author{Research implementation report}
+\date{October 2026}
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report describes an extension to a synthetic cloud queueing simulator. The extension trains a Random Forest runtime regressor, estimates a one-sided upper runtime offset from calibration residuals, and compares deterministic non-preemptive queue policies with optional deadlines. The benchmark runner uses disjoint train, calibration, validation, and test data and records latency, deadline outcomes, throughput, queue occupancy, VM utilization, simulated VM-hours, and prediction metrics. A full factor-grid run produced 1,008 scheduler runs with 25 tasks per run and two seeds per workload condition. Across six held-out synthetic runtime profiles, mean test MAE was 0.907 seconds, RMSE was 1.383 seconds, and empirical upper-runtime coverage was 95.9\%. The combined policy had mixed outcomes: its mean deadline violation rate was lower than FCFS, but its mean P95 response time was higher. These synthetic results do not establish a general performance improvement or novelty.
+\end{abstract}
+
+\section{Introduction}
+Cloud task schedulers make dispatch decisions while task execution times are not known exactly. When tasks have deadlines, prediction errors can affect whether a task appears feasible and which waiting task should start first. This project studies a small simulator extension that places runtime prediction and a residual-based conservative adjustment alongside deadline urgency. All conclusions in this report apply to the simulator and synthetic task generators only.
+
+\section{Related work}
+Random forests aggregate randomized tree predictors and are a standard regression method \cite{breiman2001}. Split residual calibration is related to predictive uncertainty calibration, but the implementation here uses a global one-sided residual quantile and does not implement a complete conformal prediction method. Conformalized quantile regression describes adaptive intervals and coverage results under its stated assumptions \cite{romano2019}; those results are not transferred to this implementation. Earliest-deadline-first scheduling has classical results under constrained real-time scheduling assumptions \cite{liu1973}. This simulator uses non-preemptive queue dispatch with stochastic arrivals and does not satisfy the assumptions needed to claim EDF optimality. The current work has not completed a systematic review and makes no novelty claim.
+
+\section{Problem formulation}
+Each task $i$ has feature vector $x_i=(\mathrm{CPU}_i,\mathrm{RAM}_i,\mathrm{type}_i)$, arrival time $a_i$, actual service duration $s_i$, and optional absolute deadline $d_i$. Given current time $t$, queue wait estimate $\widehat{w}_i$, and runtime estimate $\widehat{s}_i$, estimated slack is
+\[
+\widehat{\ell}_i=d_i-t-\widehat{w}_i-\widehat{s}_i.
+\]
+Tasks without deadlines are assigned no slack ordering. Negative estimated slack indicates the task is currently estimated to be infeasible; it does not imply that a future deadline violation is certain.
+
+\section{Proposed methodology}
+The RF estimates $\widehat{s}_i=f(x_i)$. On calibration data, residuals are $r_j=s_j-\widehat{s}_j$. At quantile $q=0.95$, the implementation selects the higher empirical sample quantile $Q_q(r)$ and uses
+\[
+\widehat{s}^{\mathrm{upper}}_i=\max(0,\widehat{s}_i)+\max(0,Q_q(r)).
+\]
+This global additive offset is conservative only to the extent that the calibration residual distribution is representative. Small calibration samples and distribution shift can change empirical coverage. The value is evaluated on a disjoint test set.
+
+The deterministic slack policy schedules nonnegative-slack deadline tasks first by increasing slack. Estimated-infeasible deadline tasks follow, ordered by earliest absolute deadline, estimated runtime, arrival time, then request ID. Deadline-bearing work precedes work without deadlines under slack-based policies; the latter are ordered by estimated runtime and stable arrival/ID ties. EDF sorts by absolute deadline. FCFS sorts by arrival and ID. Predicted SJF and uncertainty-aware SJF sort by predicted and upper runtime respectively. The actual-runtime SJF is marked as an oracle benchmark. The combined policy uses upper runtime in the deadline slack rule. Queue wait is approximated by the total estimated waiting work divided by active workers; ongoing service remaining time is not modeled in that estimate.
+
+\section{Implementation}
+The change adds \verb|simulation/scheduling.py|, which defines stable policy priorities, and extends \verb|RequestItem| with optional deadline and prediction fields. \verb|ProcessingQueue| retains FIFO \verb|dequeue()| and adds policy-based removal. \verb|SimulationRunner| estimates runtime on arrival and selects waiting tasks when workers become available. \verb|RFServiceTimePredictor| supports a calibration quantile and upper predictions. \verb|train_calibrate_test_predictor| uses disjoint 60/20/20 train/calibration/test partitions. The existing autoscaler simulator remains available separately.
+
+\section{Experimental setup}
+The benchmark script \verb|simulation/research_benchmark.py| spans low/medium/high load, short/medium/long task duration, tight/relaxed deadline allowances, steady/bursty arrivals, and low/high Gaussian runtime noise. The moderate service distribution is held fixed across steady and bursty arrival cases. It repeats every case with fixed seeds and pairs the same generated trace and model across schedulers. All dispatch comparisons use four fixed workers. The recorded full grid contains 72 workload cases, two repeats per case, 25 tasks per trace, and 1,008 scheduler runs. Each fitted profile uses independently generated train/calibration/validation/test splits of 720/180/120/180 rows.
+
+Metrics are defined as follows: deadline violation rate is late completions divided by completed deadline-bearing tasks; response latency is arrival-to-completion time; waiting time ends when service begins; throughput is completions per total simulated second; average queue length is the time-weighted processing-queue occupancy; utilization is busy service seconds divided by integrated active VM seconds; and VM-hours are integrated active capacity divided by 3,600. VM-hours are a simulator resource measure and not a cloud bill. RF errors and empirical coverage are calculated on held-out synthetic test rows.
+
+\section{Results and discussion}
+Table~\ref{tab:results} reports means from the full grid. There are 144 paired runs per scheduler, each with 25 requests. The 72 workload conditions cover the requested load, duration, deadline, arrival, and runtime-noise factors, with two seeds per condition. Differences are descriptive only.
+\begin{table}[h]
+\centering
+\caption{Measured smoke-run means across four synthetic workload cases.}
+\label{tab:results}
+\begin{tabular}{lrrrr}
+\toprule
+Policy & Deadline misses & Mean response (s) & Mean P95 (s) & VM-hours\\
+\midrule
+FCFS & 0.101 & 1.517 & 3.360 & 0.01430\\
+Predicted SJF & 0.092 & 1.512 & 3.525 & 0.01428\\
+Actual SJF (oracle) & 0.059 & 1.413 & 3.528 & 0.01460\\
+EDF & 0.060 & 1.414 & 3.513 & 0.01459\\
+Deadline-aware & 0.121 & 1.526 & 3.494 & 0.01434\\
+Uncertainty-aware SJF & 0.092 & 1.512 & 3.525 & 0.01428\\
+Combined proposed & 0.085 & 1.493 & 3.511 & 0.01433\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Mean held-out MAE was 0.907 seconds and RMSE was 1.383 seconds. Upper-runtime empirical coverage averaged 95.9\% across six held-out test profiles of 180 rows each. Validation MAE was 0.847 seconds, RMSE was 1.206 seconds, and upper-runtime coverage was 95.6\% across six validation profiles of 120 rows each. Proposed had a lower mean deadline violation rate than FCFS (8.5\% vs. 10.1\%) but higher mean P95 response time (3.511 vs. 3.360 seconds); EDF had a lower mean violation rate (6.0\%). Deadline-aware without uncertainty had a higher mean violation rate (12.1\%). Uncertainty-aware SJF matched predicted SJF because a global additive residual offset preserves pairwise SJF ordering. Results are mixed and no general improvement is established.
+
+\section{Limitations}
+All data are synthetic and generated by the same service-time profile for model splits and task traces. This does not establish real workload generalization. The global residual offset is not task-conditional and has no formal coverage claim here. Queue-wait estimates omit service remaining on busy workers, and running tasks are not preempted. Simulated utilization and VM-hours do not model cloud provider prices, network delays, or provisioning behavior. Two repeats and 25 tasks per trace remain limited evidence.
+
+\section{Conclusion and future work}
+The repository now contains a reproducible experiment path for deadline-aware dispatch and global residual-based upper runtime estimates while preserving the existing autoscaler benchmark. The current measured artifacts demonstrate execution of the pipeline, not superior scheduling quality. Future work should align train/calibration/test runtimes with trace generation, evaluate more seeds and larger traces, study feature-conditional uncertainty estimates, and conduct a systematic literature review before making contribution claims.
+
+\section{References}
+\begin{thebibliography}{9}
+\bibitem{breiman2001} L. Breiman, ``Random Forests,'' \emph{Machine Learning}, vol. 45, pp. 5--32, 2001. doi: \href{https://doi.org/10.1023/A:1010933404324}{10.1023/A:1010933404324}.
+\bibitem{romano2019} Y. Romano, E. Patterson, and E. Candes, ``Conformalized Quantile Regression,'' in \emph{Advances in Neural Information Processing Systems 32}, 2019. \href{https://papers.nips.cc/paper/2019/hash/5103c3584b063c431bd1268e9b5e76fb-Abstract.html}{Paper page}.
+\bibitem{liu1973} C. L. Liu and J. W. Layland, ``Scheduling Algorithms for Multiprogramming in a Hard-Real-Time Environment,'' \emph{Journal of the ACM}, vol. 20, no. 1, pp. 46--61, 1973. doi: \href{https://doi.org/10.1145/321738.321743}{10.1145/321738.321743}.
+\end{thebibliography}
+\end{document}

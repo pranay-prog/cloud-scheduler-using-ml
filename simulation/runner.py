@@ -5,6 +5,7 @@ Coordinates:
 - Dispatch ProcessingQueue Q(t)
 - Dynamic worker pool with 10s boot delay (T_scale) on scale-up
 - Periodic autoscaling control loop (Fixed, Threshold, Variability-Aware)
+- Optional deterministic task dispatch policy; FIFO remains the default
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from system.processing_queue import ProcessingQueue
 from simulation.metrics import SimulationMetrics, SimulationResult
 from workload.generator import RequestItem, WorkloadTrace
 from workload.characterizer import compute_arrival_metrics, compute_service_metrics
+from simulation.scheduling import SchedulingPolicy, SCHEDULERS
 
 
 class SimulationRunner:
@@ -35,6 +37,8 @@ class SimulationRunner:
         sla_target: float = 2.0,
         rf_model: Optional[Any] = None,
         use_rf_cs2: bool = False,
+        scheduling_policy: Optional[SchedulingPolicy] = None,
+        upper_residual_quantile: float = 0.0,
     ):
         self.trace: WorkloadTrace = trace
         self.autoscaler: Any = autoscaler
@@ -45,6 +49,8 @@ class SimulationRunner:
         self.sla_target: float = float(sla_target)
         self.rf_model: Optional[Any] = rf_model
         self.use_rf_cs2: bool = use_rf_cs2
+        self.scheduling_policy = scheduling_policy or SCHEDULERS["FCFS"]
+        self.upper_residual_quantile = max(0.0, float(upper_residual_quantile))
 
         # State storage
         self.storage_buffer: StorageBuffer = StorageBuffer(capacity=buffer_capacity)
@@ -99,13 +105,24 @@ class SimulationRunner:
                 return
 
             # Pull next item from processing queue
-            item: Optional[RequestItem] = self.processing_queue.dequeue()
+            queued = list(self.processing_queue._items)
+            estimated_work = sum(
+                max(0.1, float(getattr(t, "upper_service", None) or getattr(t, "predicted_service", None) or 0.1))
+                for t in queued
+            )
+            estimated_wait = estimated_work / max(1, self.active_workers)
+            item: Optional[RequestItem] = self.processing_queue.dequeue_by(
+                lambda items: self.scheduling_policy.choose(items, self.env.now, estimated_wait)
+            )
+            self.metrics.record_queue_length(self.processing_queue.backlog, self.env.now)
 
             # Transfer pending item from storage buffer into processing queue
             if not self.storage_buffer.is_empty():
                 buffered_item = self.storage_buffer.pop()
                 if buffered_item is not None:
                     self.processing_queue.enqueue(buffered_item)
+                    self.metrics.record_queue_length(self.processing_queue.backlog, self.env.now)
+                    self._trigger_task_event()
 
             if item is None:
                 # Wait for next task event or 1.0s timeout
@@ -117,6 +134,8 @@ class SimulationRunner:
             wait_time = self.env.now - item.arrival_timestamp
             yield self.env.timeout(item.service_time)
             total_latency = self.env.now - item.arrival_timestamp
+            self.metrics.record_busy_time(item.service_time)
+            self.metrics.record_deadline_completion(item.deadline, self.env.now)
 
             self.metrics.record_completion(wait_time=wait_time, total_latency=total_latency)
             self._check_all_finished()
@@ -135,14 +154,22 @@ class SimulationRunner:
 
             self.metrics.record_arrival()
             req.arrival_timestamp = self.env.now
+            if req.deadline_after_arrival is not None:
+                req.deadline = req.arrival_timestamp + req.deadline_after_arrival
 
             # Track rolling observation window
             self._recent_arrivals.append(req.inter_arrival)
             self._recent_services.append(req.service_time)
             if self.rf_model is not None:
                 feat = [[req.cpu_req, req.ram_req, req.workload_type]]
-                pred_s = float(self.rf_model.predict(feat)[0])
+                try:
+                    pred_s = float(self.rf_model.predict(feat)[0])
+                    if not (pred_s > 0 and pred_s < float("inf")):
+                        pred_s = max(0.1, float(req.service_time))
+                except (ValueError, TypeError, FloatingPointError):
+                    pred_s = 0.1
                 req.predicted_service = pred_s
+                req.upper_service = max(0.0, pred_s) + self.upper_residual_quantile
                 self._recent_rf_preds.append(pred_s)
 
             if len(self._recent_arrivals) > 250:
@@ -163,6 +190,7 @@ class SimulationRunner:
                 buffered_item = self.storage_buffer.pop()
                 if buffered_item is not None:
                     self.processing_queue.enqueue(buffered_item)
+                    self.metrics.record_queue_length(self.processing_queue.backlog, self.env.now)
                     self._trigger_task_event()
 
     def _control_loop_process(self):

@@ -25,6 +25,10 @@ class RequestItem:
     ram_req: int            # RAM GB requested
     workload_type: int      # 1=Read/Web, 2=Compute, 3=Write/DB Batch
     predicted_service: Optional[float] = None
+    deadline: Optional[float] = None  # absolute simulated time; None means no deadline
+    deadline_after_arrival: Optional[float] = None
+    upper_service: Optional[float] = None
+    arrival_timestamp: float = 0.0
 
 
 class WorkloadTrace:
@@ -64,6 +68,8 @@ def generate_trace(
     target_ca2: float = 1.0,
     service_distribution: str = "exponential",
     seed: int = 42,
+    deadline_slack_factor: Optional[float] = None,
+    runtime_noise_level: float = 0.0,
 ) -> WorkloadTrace:
     """Generate a synthetic request trace with exact target arrival rate and variability.
 
@@ -72,6 +78,8 @@ def generate_trace(
         E[A] = shape * scale = 1 / lambda -> scale = 1 / (shape * lambda)
     """
     rng = np.random.RandomState(seed)
+    if not np.isfinite(runtime_noise_level) or runtime_noise_level < 0:
+        raise ValueError("runtime_noise_level must be a finite nonnegative value")
 
     # 1. Generate inter-arrival times
     if target_ca2 <= 0:
@@ -118,6 +126,8 @@ def generate_trace(
     service_times = service_times * (0.8 + 0.4 * (correlated_shift / correlated_shift.mean()))
     # Re-normalize mean so mean service duration matches target_mean_s
     service_times = service_times * (target_mean_s / service_times.mean())
+    if runtime_noise_level > 0:
+        service_times = service_times + rng.normal(0.0, runtime_noise_level, size=num_requests)
     service_times = np.clip(service_times, 0.02, None)
 
     requests: List[RequestItem] = []
@@ -133,6 +143,11 @@ def generate_trace(
             )
         )
 
+    if deadline_slack_factor is not None:
+        # Deadline is assigned relative to each task's own arrival by the runner.
+        # Store a relative allowance until arrival time is known.
+        for req in requests:
+            req.deadline_after_arrival = float(deadline_slack_factor * req.service_time)
     return WorkloadTrace(name=name, requests=requests)
 
 

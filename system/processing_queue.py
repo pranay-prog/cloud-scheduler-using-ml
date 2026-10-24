@@ -1,14 +1,15 @@
 """Processing Queue Q(t) representation.
 
 Models the dispatch queue Q(t) holding tasks waiting for or being assigned
-to active worker nodes (VMs) in the storage service pool.
+to active worker nodes (VMs) in the storage service pool. FIFO remains the
+default; an explicit selector can remove another queued item.
 """
 
 from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Deque, Optional
+from typing import Any, Callable, Deque, Optional
 
 
 @dataclass
@@ -23,7 +24,7 @@ class ProcessingQueueStats:
 
 
 class ProcessingQueue:
-    """Processing queue Q(t) with FIFO dispatch semantics."""
+    """Processing queue Q(t), with FIFO default and optional policy dispatch."""
 
     def __init__(self, capacity: int = 10000):
         if capacity <= 0:
@@ -65,11 +66,27 @@ class ProcessingQueue:
         self.total_dequeued += 1
         return self._items.popleft()
 
+    def dequeue_by(self, chooser: Callable[[list[Any]], int]) -> Optional[Any]:
+        """Remove the task selected by chooser; default FIFO dequeue is unchanged."""
+        if not self._items:
+            return None
+        items = list(self._items)
+        index = int(chooser(items))
+        if index < 0 or index >= len(items):
+            raise IndexError("queue chooser returned an invalid index")
+        del self._items[index]
+        self.total_dequeued += 1
+        return items[index]
+
     def peek(self) -> Optional[Any]:
         """Inspect the head task in the queue."""
         if not self._items:
             return None
         return self._items[0]
+
+    def snapshot(self) -> list[Any]:
+        """Return a shallow FIFO snapshot for policy evaluation."""
+        return list(self._items)
 
     def get_stats(self) -> ProcessingQueueStats:
         """Retrieve current queue metrics."""
